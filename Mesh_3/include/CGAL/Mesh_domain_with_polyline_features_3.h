@@ -39,6 +39,7 @@
 
 #include <variant>
 #include <memory>
+#include <deque>
 
 namespace CGAL {
 
@@ -453,15 +454,12 @@ public:
 
 template <typename GT, typename MapIterator>
 struct Mesh_domain_segment_of_curve_primitive{
-  typedef typename std::iterator_traits<MapIterator>::value_type Map_value_type;
-  typedef typename Map_value_type::first_type Curve_id;
-  typedef typename Map_value_type::second_type Polyline;
+  typedef typename std::iterator_traits<MapIterator>::value_type Polyline;
+  typedef typename Polyline::const_iterator PointIterator;
 
-  typedef std::pair<MapIterator,
-                    typename Polyline::const_iterator> Id;
+  typedef std::pair<MapIterator, PointIterator> Id;
 
-  typedef typename std::iterator_traits<
-    typename Polyline::const_iterator>::value_type Point;
+  typedef typename std::iterator_traits<PointIterator>::value_type Point;
 
   typedef typename GT::Segment_3 Datum;
 
@@ -835,14 +833,24 @@ private:
   /// point)
   Index point_corner_index(const Point_3& p) const;
 
+  // Accessors for curve polyline
+  Polyline& curve(Curve_index index) {
+    CGAL_precondition(index > 0 && std::size_t(index) <= edges_.size());
+    return edges_[index - 1];
+  }
+  const Polyline& curve(Curve_index index) const {
+    CGAL_precondition(index > 0 && std::size_t(index) <= edges_.size());
+    return edges_[index - 1];
+  }
+
 private:
   typedef std::map<Point_3,Corner_index> Corners;
 
   typedef Mesh_3::internal::Polyline<GT> Polyline;
-  typedef std::map<Curve_index, Polyline> Edges;
-  typedef std::map<Curve_index, Surface_patch_index_set > Edges_incidences;
-  typedef std::map<Corner_index, std::set<Curve_index> > Corners_tmp_incidences;
-  typedef std::map<Corner_index, Surface_patch_index_set > Corners_incidences;
+  typedef std::deque<Polyline> Edges;                     // was map
+  typedef std::deque<Surface_patch_index_set> Edges_incidences; // was map
+  typedef std::deque<std::set<Curve_index>> Corners_tmp_incidences; // was map
+  typedef std::deque<Surface_patch_index_set> Corners_incidences;   // was map
 
   typedef Mesh_3::internal::Mesh_domain_segment_of_curve_primitive<
     GT,
@@ -878,7 +886,7 @@ public:
   }
   Curve_index maximal_curve_index() const {
     if(edges_incidences_.empty()) return Curve_index();
-    return std::prev(edges_incidences_.end())->first;
+    return static_cast<Curve_index>(edges_incidences_.size());
   }
 
   void build_curves_aabb_tree() const {
@@ -897,7 +905,7 @@ public:
           edges_end = edges_.end();
         edges_it != edges_end; ++edges_it)
     {
-      const Polyline& polyline = edges_it->second;
+      const Polyline& polyline = *edges_it; // was edges_it->second
       for(typename Polyline::const_iterator
             pit = polyline.points_.begin(),
             end = polyline.points_.end() - 1;
@@ -941,27 +949,28 @@ OutputIterator
 Mesh_domain_with_polyline_features_3<MD_>::
 get_curves(OutputIterator out) const
 {
+  Curve_index idx = 1;
   for ( typename Edges::const_iterator
-       eit = edges_.begin(), end = edges_.end() ; eit != end ; ++eit )
+       eit = edges_.begin(), end = edges_.end() ; eit != end ; ++eit, ++idx )
   {
-    CGAL_assertion( eit->second.is_valid() );
+    CGAL_assertion( eit->is_valid() );
 
-    const Point_3& p = eit->second.start_point();
-    const Point_3& q = eit->second.end_point();
+    const Point_3& p = eit->start_point();
+    const Point_3& q = eit->end_point();
 
     Index p_index, q_index;
-    if ( ! eit->second.is_loop() )
+    if ( ! eit->is_loop() )
     {
       p_index = point_corner_index(p);
       q_index = point_corner_index(q);
     }
     else
     {
-      p_index = index_from_curve_index(eit->first);
+      p_index = index_from_curve_index(idx);
       q_index = p_index;
     }
 
-    *out++ = {eit->first,
+    *out++ = {idx,
               std::make_pair(p,p_index),
               std::make_pair(q,q_index)};
   }
@@ -993,11 +1002,10 @@ curve_segment_length(const Point_3& p, const Point_3 q,
                      const Curve_index& curve_index,
                      CGAL::Orientation orientation) const
 {
-  // Get corresponding polyline
-  typename Edges::const_iterator eit = edges_.find(curve_index);
-  CGAL_assertion(eit != edges_.end());
-
-  return eit->second.curve_segment_length(p, q, orientation);
+  CGAL_assertion(curve_index > 0 &&
+                 std::size_t(curve_index) <= edges_.size());
+  const Polyline& poly = curve(curve_index);
+  return poly.curve_segment_length(p, q, orientation);
 }
 
 
@@ -1006,11 +1014,9 @@ typename Mesh_domain_with_polyline_features_3<MD_>::FT
 Mesh_domain_with_polyline_features_3<MD_>::
 curve_length(const Curve_index& curve_index) const
 {
-  // Get corresponding polyline
-  typename Edges::const_iterator eit = edges_.find(curve_index);
-  CGAL_assertion(eit != edges_.end());
-
-  return eit->second.length();
+  CGAL_assertion(curve_index > 0 &&
+                 std::size_t(curve_index) <= edges_.size());
+  return curve(curve_index).length();
 }
 
 
@@ -1021,12 +1027,10 @@ construct_point_on_curve(const Point_3& starting_point,
                          const Curve_index& curve_index,
                          FT distance) const
 {
-  // Get corresponding polyline
-  typename Edges::const_iterator eit = edges_.find(curve_index);
-  CGAL_assertion(eit != edges_.end());
-
-  // Return point at geodesic_distance distance from starting_point
-  return eit->second.point_at(starting_point,distance);
+  CGAL_assertion(curve_index > 0 &&
+                 std::size_t(curve_index) <= edges_.size());
+  const Polyline& poly = curve(curve_index);
+  return poly.point_at(starting_point, distance);
 }
 
 
@@ -1045,6 +1049,10 @@ add_corner(const Point_3& p)
   // ... otherwise, insert it!
   const Corner_index index = current_corner_index_++;
   corners_.insert(cit, std::make_pair(p, index));
+
+  // Ensure the incidence deques have enough space (push empty sets)
+  corners_tmp_incidences_.emplace_back();
+  corners_incidences_.emplace_back();
 
   return index;
 }
@@ -1071,7 +1079,8 @@ register_corner(const Point_3& p, const Curve_index& curve_index)
   // 'add_corner' will itself seek if 'p' is already a corner, and, in that case,
   // return the Corner_index that has been assigned to this position.
   Corner_index index = add_corner(p);
-  corners_tmp_incidences_[index].insert(curve_index);
+  // Now index is valid and corners_tmp_incidences_ has size >= index
+  corners_tmp_incidences_[index - 1].insert(curve_index);
 
   return index;
 }
@@ -1084,7 +1093,7 @@ add_corner_with_context(const Point_3& p, const Surface_patch_index& surface_pat
 {
   Corner_index index = add_corner(p);
 
-  Surface_patch_index_set& incidences = corners_incidences_[index];
+  Surface_patch_index_set& incidences = corners_incidences_[index - 1];
   incidences.insert(surface_patch_index);
 
   return index;
@@ -1164,7 +1173,7 @@ add_features_and_incidences(InputIterator first, InputIterator end,
       patches_ids = get(inc_patches_ind_pmap, *first);
 
     Curve_index curve_id = insert_edge(polyline.begin(), polyline.end());
-    edges_incidences_[curve_id].insert(patches_ids.begin(), patches_ids.end());
+    edges_incidences_[curve_id - 1].insert(patches_ids.begin(), patches_ids.end());
 #if CGAL_MESH_3_PROTECTION_DEBUG & 1
     std::cerr << "Curve #" << curve_id << " is incident to the following patches: {";
     for(auto id: patches_ids) {
@@ -1186,12 +1195,10 @@ Mesh_domain_with_polyline_features_3<MD_>::
 signed_geodesic_distance(const Point_3& p, const Point_3& q,
                          const Curve_index& curve_index) const
 {
-  // Get corresponding polyline
-  typename Edges::const_iterator eit = edges_.find(curve_index);
-  CGAL_assertion(eit != edges_.end());
-
-  // Compute geodesic_distance
-  return eit->second.signed_geodesic_distance(p,q);
+  CGAL_assertion(curve_index > 0 &&
+                 std::size_t(curve_index) <= edges_.size());
+  const Polyline& poly = curve(curve_index);
+  return poly.signed_geodesic_distance(p,q);
 }
 
 
@@ -1217,19 +1224,16 @@ Mesh_domain_with_polyline_features_3<MD_>::
 reindex_patches(const std::vector<Surf_p_index>& map,
                 IncidenceMap& incidence_map)
 {
-  for(typename IncidenceMap::value_type& pair :
-                incidence_map)
+  // IncidenceMap is either Edges_incidences or Corners_incidences (deque of sets)
+  for(Surface_patch_index_set& patch_index_set : incidence_map)
   {
-    Surface_patch_index_set& patch_index_set = pair.second;
     Surface_patch_index_set new_index_set;
-    for(typename Surface_patch_index_set::const_iterator
-        it = patch_index_set.begin(), end = patch_index_set.end();
-        it != end; ++it)
+    for(Surface_patch_index idx : patch_index_set)
     {
-      CGAL_assertion(std::size_t(*it) < map.size());
-      new_index_set.insert(map[*it]);
+      CGAL_assertion(std::size_t(idx) < map.size());
+      new_index_set.insert(map[idx]);
     }
-    pair.second = new_index_set;
+    patch_index_set = std::move(new_index_set);
   }
 }
 
@@ -1250,13 +1254,9 @@ Mesh_domain_with_polyline_features_3<MD_>::
 get_incidences(Curve_index id,
                IndicesOutputIterator indices_out) const
 {
-  typename Edges_incidences::const_iterator it = edges_incidences_.find(id);
-
-  if(it == edges_incidences_.end())
+  if(id <= 0 || std::size_t(id) > edges_incidences_.size())
     return indices_out;
-
-  const Surface_patch_index_set& incidences = it->second;
-
+  const Surface_patch_index_set& incidences = edges_incidences_[id - 1];
   return std::copy(incidences.begin(), incidences.end(), indices_out);
 }
 
@@ -1267,11 +1267,9 @@ Mesh_domain_with_polyline_features_3<MD_>::
 get_corner_incidences(Corner_index id,
                       IndicesOutputIterator indices_out) const
 {
-  typename Corners_incidences::const_iterator it = corners_incidences_.find(id);
-  if(it == corners_incidences_.end())
+  if(id <= 0 || std::size_t(id) > corners_incidences_.size())
     return indices_out;
-
-  const Surface_patch_index_set& incidences = it->second;
+  const Surface_patch_index_set& incidences = corners_incidences_[id - 1];
   return std::copy(incidences.begin(), incidences.end(), indices_out);
 }
 
@@ -1282,11 +1280,9 @@ Mesh_domain_with_polyline_features_3<MD_>::
 get_corner_incident_curves(Corner_index id,
                            IndicesOutputIterator indices_out) const
 {
-  typename Corners_tmp_incidences::const_iterator it = corners_tmp_incidences_.find(id);
-  if(it == corners_tmp_incidences_.end())
+  if(id <= 0 || std::size_t(id) > corners_tmp_incidences_.size())
     return indices_out;
-
-  const std::set<Curve_index>& incidences = it->second;
+  const std::set<Curve_index>& incidences = corners_tmp_incidences_[id - 1];
   return std::copy(incidences.begin(), incidences.end(), indices_out);
 }
 /// @endcond
@@ -1374,8 +1370,8 @@ display_corner_incidences(std::ostream& os, Point_3 p, Corner_index id)
 
   typedef Mesh_3::internal::Display_incidences_to_curves_aux<Mdwpf,i_s_csi::value> D_i_t_c;
   typedef Mesh_3::internal::Display_incidences_to_patches_aux<Mdwpf,i_s_spi::value> D_i_t_p;
-  D_i_t_c()(os, p, id, corners_tmp_incidences_[id]);
-  D_i_t_p()(os, p, id, corners_incidences_[id]);
+  D_i_t_c()(os, p, id, corners_tmp_incidences_[id - 1]);
+  D_i_t_p()(os, p, id, corners_incidences_[id - 1]);
 }
 /// @endcond
 template <class MD_>
@@ -1389,8 +1385,8 @@ compute_corners_incidences()
   {
     const Corner_index id = cit->second;
 
-    const typename Corners_tmp_incidences::mapped_type&
-      corner_tmp_incidences = corners_tmp_incidences_[id];
+    const std::set<Curve_index>&
+      corner_tmp_incidences = corners_tmp_incidences_[id - 1];
 
     // If the corner is incident to only one curve, and that curve is a
     // loop, then remove the corner from the set, only if the angle is not
@@ -1400,7 +1396,7 @@ compute_corners_incidences()
        is_loop(*corner_tmp_incidences.begin()))
     {
       const Curve_index curve_id = *corner_tmp_incidences.begin();
-      const Polyline& polyline = edges_[curve_id];
+      const Polyline& polyline = curve(curve_id); // was edges_[curve_id]
       if(polyline.angle_at_first_point() == OBTUSE) {
         typename Corners::iterator to_erase = cit;
         ++cit;
@@ -1409,7 +1405,7 @@ compute_corners_incidences()
       }
     }
 
-    Surface_patch_index_set& incidences = corners_incidences_[id];
+    Surface_patch_index_set& incidences = corners_incidences_[id - 1];
 
     for(Curve_index curve_index : corner_tmp_incidences)
     {
@@ -1432,10 +1428,8 @@ const typename Mesh_domain_with_polyline_features_3<MD_>::Surface_patch_index_se
 Mesh_domain_with_polyline_features_3<MD_>::
 get_incidences(Curve_index id) const
 {
-  typename Edges_incidences::const_iterator it = edges_incidences_.find(id);
-  CGAL_assertion(it != edges_incidences_.end());
-
-  return it->second;
+  CGAL_precondition(id > 0 && std::size_t(id) <= edges_incidences_.size());
+  return edges_incidences_[id - 1];
 }
 
 template <class MD_>
@@ -1461,14 +1455,19 @@ insert_edge(InputIterator first, InputIterator end)
   }
 
   // Create a new polyline
-  std::pair<typename Edges::iterator,bool> insertion =
-    edges_.insert(std::make_pair(curve_index,Polyline()));
+  edges_.emplace_back();                // was insert
+  CGAL_assertion(curve_index == static_cast<Curve_index>(edges_.size()));
+  Polyline& polyline = edges_.back();
 
   // Fill polyline with data
   while ( first != end )
   {
-    insertion.first->second.add_point(*first++);
+    polyline.add_point(*first++);
   }
+
+  // Also ensure edges_incidences_ has a matching empty entry
+  edges_incidences_.emplace_back();
+
   return curve_index;
 }
 /// @endcond
@@ -1479,13 +1478,13 @@ Mesh_domain_with_polyline_features_3<MD_>::
 distance_sign(const Point_3& p, const Point_3& q,
               const Curve_index& index) const
 {
-  typename Edges::const_iterator eit = edges_.find(index);
-  CGAL_assertion(eit != edges_.end());
-  CGAL_precondition( ! eit->second.is_loop() );
+  CGAL_assertion(index > 0 && std::size_t(index) <= edges_.size());
+  const Polyline& poly = curve(index);
+  CGAL_precondition( ! poly.is_loop() );
 
   if ( p == q )
     return CGAL::ZERO;
-  else if ( eit->second.are_ordered_along(p,q) )
+  else if ( poly.are_ordered_along(p,q) )
     return CGAL::POSITIVE;
   else
     return CGAL::NEGATIVE;
@@ -1504,13 +1503,12 @@ distance_sign_along_loop(const Point_3& p,
   CGAL_assertion(p != r);
   CGAL_assertion(r != q);
 
-  // Find edge
-  typename Edges::const_iterator eit = edges_.find(index);
-  CGAL_assertion(eit != edges_.end());
-  CGAL_assertion(eit->second.is_loop());
+  CGAL_assertion(index > 0 && std::size_t(index) <= edges_.size());
+  const Polyline& poly = curve(index);
+  CGAL_assertion(poly.is_loop());
 
-  FT pq = eit->second.curve_segment_length(p,q,CGAL::POSITIVE);
-  FT pr = eit->second.curve_segment_length(p,r,CGAL::POSITIVE);
+  FT pq = poly.curve_segment_length(p,q,CGAL::POSITIVE);
+  FT pr = poly.curve_segment_length(p,r,CGAL::POSITIVE);
 
   // Compare pq and pr
   if ( pq <= pr ) { return CGAL::POSITIVE; }
@@ -1522,11 +1520,8 @@ bool
 Mesh_domain_with_polyline_features_3<MD_>::
 is_loop(const Curve_index& index) const
 {
-  // Find edge
-  typename Edges::const_iterator eit = edges_.find(index);
-  CGAL_assertion(eit != edges_.end());
-
-  return eit->second.is_loop();
+  CGAL_assertion(index > 0 && std::size_t(index) <= edges_.size());
+  return curve(index).is_loop();
 }
 
 template <class MD_>
@@ -1537,11 +1532,10 @@ is_curve_segment_covered(const Curve_index& index,
                          const Point_3& c1, const Point_3& c2,
                          const FT sq_r1, const FT sq_r2) const
 {
-  typename Edges::const_iterator eit = edges_.find(index);
-  CGAL_assertion(eit != edges_.end());
-
-  return eit->second.is_curve_segment_covered(orientation,
-                                              c1, c2, sq_r1, sq_r2);
+  CGAL_assertion(index > 0 && std::size_t(index) <= edges_.size());
+  const Polyline& poly = curve(index);
+  return poly.is_curve_segment_covered(orientation,
+                                       c1, c2, sq_r1, sq_r2);
 }
 
 } //namespace CGAL
