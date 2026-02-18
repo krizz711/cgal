@@ -457,7 +457,6 @@ struct Mesh_domain_segment_of_curve_primitive{
   typedef typename std::iterator_traits<MapIterator>::value_type Polyline;
   typedef typename Polyline::const_iterator PointIterator;
 
-  // FIXED: Id now stores (Curve_index, PointIterator) instead of (MapIterator, PointIterator)
   typedef std::pair<Curve_index, PointIterator> Id;
 
   typedef typename std::iterator_traits<PointIterator>::value_type Point;
@@ -852,7 +851,6 @@ private:
   typedef std::deque<Surface_patch_index_set> Edges_incidences; // was map
   typedef std::deque<std::set<Curve_index>> Corners_tmp_incidences; // was map
 
-  // FIXED: Restored corners_incidences_ as a map (key = Corner_index)
   typedef std::map<Corner_index, Surface_patch_index_set> Corners_incidences;
 
   typedef Mesh_3::internal::Mesh_domain_segment_of_curve_primitive<
@@ -1058,7 +1056,6 @@ add_corner(const Point_3& p)
   // Ensure the incidence deques have enough space (push empty sets)
   corners_tmp_incidences_.emplace_back();
 
-  // FIXED: Insert into map instead of emplace_back
   corners_incidences_.insert(std::make_pair(index, Surface_patch_index_set()));
 
   return index;
@@ -1100,7 +1097,6 @@ add_corner_with_context(const Point_3& p, const Surface_patch_index& surface_pat
 {
   Corner_index index = add_corner(p);
 
-  // FIXED: Use map subscript with index
   Surface_patch_index_set& incidences = corners_incidences_[index];
   incidences.insert(surface_patch_index);
 
@@ -1232,19 +1228,7 @@ Mesh_domain_with_polyline_features_3<MD_>::
 reindex_patches(const std::vector<Surf_p_index>& map,
                 IncidenceMap& incidence_map)
 {
-  // IncidenceMap is either Edges_incidences (deque) or Corners_incidences (map)
-  // FIXED: This overload handles both, but we need a separate overload for map to avoid ambiguity.
-  // The existing code expects a range with begin/end, but map's element type is pair.
-  // We'll let the compiler choose based on the type of incidence_map.
-  // This template will be used for deque (where value_type = Surface_patch_index_set).
-  // For map we will add a separate overload below.
-  // However, this function as written tries to iterate over the map's values directly,
-  // which would fail because map's value_type is pair<const Corner_index, Surface_patch_index_set>.
-  // So we keep this for deque only, and add an overload for map.
-  // Actually, this generic version works if incidence_map is a range of sets, but map is not.
-  // We'll let the existing code handle deque, and add a specific overload for map.
-  // But to avoid breaking existing code, we keep this as is; for map we'll have a separate overload.
-  // For deque, it works because *it is a set.
+
   for(auto& patch_index_set : incidence_map)
   {
     Surface_patch_index_set new_index_set;
@@ -1308,7 +1292,7 @@ Mesh_domain_with_polyline_features_3<MD_>::
 get_corner_incidences(Corner_index id,
                       IndicesOutputIterator indices_out) const
 {
-  // FIXED: Use map find
+  
   typename Corners_incidences::const_iterator it = corners_incidences_.find(id);
   if(it == corners_incidences_.end())
     return indices_out;
@@ -1414,7 +1398,7 @@ display_corner_incidences(std::ostream& os, Point_3 p, Corner_index id)
   typedef Mesh_3::internal::Display_incidences_to_curves_aux<Mdwpf,i_s_csi::value> D_i_t_c;
   typedef Mesh_3::internal::Display_incidences_to_patches_aux<Mdwpf,i_s_spi::value> D_i_t_p;
   D_i_t_c()(os, p, id, corners_tmp_incidences_[id - 1]);
-  D_i_t_p()(os, p, id, corners_incidences_[id]); // FIXED: use map subscript
+  D_i_t_p()(os, p, id, corners_incidences_[id]);  
 }
 /// @endcond
 template <class MD_>
@@ -1448,7 +1432,7 @@ compute_corners_incidences()
       }
     }
 
-    // FIXED: Use map subscript with id
+    
     Surface_patch_index_set& incidences = corners_incidences_[id];
 
     for(Curve_index curve_index : corner_tmp_incidences)
