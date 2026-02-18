@@ -457,7 +457,8 @@ struct Mesh_domain_segment_of_curve_primitive{
   typedef typename std::iterator_traits<MapIterator>::value_type Polyline;
   typedef typename Polyline::const_iterator PointIterator;
 
-  typedef std::pair<MapIterator, PointIterator> Id;
+  // FIXED: Id now stores (Curve_index, PointIterator) instead of (MapIterator, PointIterator)
+  typedef std::pair<Curve_index, PointIterator> Id;
 
   typedef typename std::iterator_traits<PointIterator>::value_type Point;
 
@@ -850,7 +851,9 @@ private:
   typedef std::deque<Polyline> Edges;                     // was map
   typedef std::deque<Surface_patch_index_set> Edges_incidences; // was map
   typedef std::deque<std::set<Curve_index>> Corners_tmp_incidences; // was map
-  typedef std::deque<Surface_patch_index_set> Corners_incidences;   // was map
+
+  // FIXED: Restored corners_incidences_ as a map (key = Corner_index)
+  typedef std::map<Corner_index, Surface_patch_index_set> Corners_incidences;
 
   typedef Mesh_3::internal::Mesh_domain_segment_of_curve_primitive<
     GT,
@@ -900,18 +903,20 @@ public:
     } else {
       curves_aabb_tree_ptr_ = std::make_shared<Curves_AABB_tree>();
     }
+    // FIXED: Compute curve index from iterator and use it in the inserted primitive id.
     for(typename Edges::const_iterator
           edges_it = edges_.begin(),
           edges_end = edges_.end();
         edges_it != edges_end; ++edges_it)
     {
-      const Polyline& polyline = *edges_it; // was edges_it->second
+      const Polyline& polyline = *edges_it;
+      Curve_index curve_id = 1 + static_cast<Curve_index>(edges_it - edges_.begin());
       for(typename Polyline::const_iterator
             pit = polyline.points_.begin(),
             end = polyline.points_.end() - 1;
           pit != end; ++pit)
       {
-        curves_aabb_tree_ptr_->insert(std::make_pair(edges_it, pit));
+        curves_aabb_tree_ptr_->insert(std::make_pair(curve_id, pit));
       }
     }
     curves_aabb_tree_ptr_->build();
@@ -1052,7 +1057,9 @@ add_corner(const Point_3& p)
 
   // Ensure the incidence deques have enough space (push empty sets)
   corners_tmp_incidences_.emplace_back();
-  corners_incidences_.emplace_back();
+
+  // FIXED: Insert into map instead of emplace_back
+  corners_incidences_.insert(std::make_pair(index, Surface_patch_index_set()));
 
   return index;
 }
@@ -1093,7 +1100,8 @@ add_corner_with_context(const Point_3& p, const Surface_patch_index& surface_pat
 {
   Corner_index index = add_corner(p);
 
-  Surface_patch_index_set& incidences = corners_incidences_[index - 1];
+  // FIXED: Use map subscript with index
+  Surface_patch_index_set& incidences = corners_incidences_[index];
   incidences.insert(surface_patch_index);
 
   return index;
@@ -1224,9 +1232,42 @@ Mesh_domain_with_polyline_features_3<MD_>::
 reindex_patches(const std::vector<Surf_p_index>& map,
                 IncidenceMap& incidence_map)
 {
-  // IncidenceMap is either Edges_incidences or Corners_incidences (deque of sets)
-  for(Surface_patch_index_set& patch_index_set : incidence_map)
+  // IncidenceMap is either Edges_incidences (deque) or Corners_incidences (map)
+  // FIXED: This overload handles both, but we need a separate overload for map to avoid ambiguity.
+  // The existing code expects a range with begin/end, but map's element type is pair.
+  // We'll let the compiler choose based on the type of incidence_map.
+  // This template will be used for deque (where value_type = Surface_patch_index_set).
+  // For map we will add a separate overload below.
+  // However, this function as written tries to iterate over the map's values directly,
+  // which would fail because map's value_type is pair<const Corner_index, Surface_patch_index_set>.
+  // So we keep this for deque only, and add an overload for map.
+  // Actually, this generic version works if incidence_map is a range of sets, but map is not.
+  // We'll let the existing code handle deque, and add a specific overload for map.
+  // But to avoid breaking existing code, we keep this as is; for map we'll have a separate overload.
+  // For deque, it works because *it is a set.
+  for(auto& patch_index_set : incidence_map)
   {
+    Surface_patch_index_set new_index_set;
+    for(Surface_patch_index idx : patch_index_set)
+    {
+      CGAL_assertion(std::size_t(idx) < map.size());
+      new_index_set.insert(map[idx]);
+    }
+    patch_index_set = std::move(new_index_set);
+  }
+}
+
+// NEW: overload for std::map<Corner_index, Surface_patch_index_set>
+template <class MD_>
+template <typename Surf_p_index>
+void
+Mesh_domain_with_polyline_features_3<MD_>::
+reindex_patches(const std::vector<Surf_p_index>& map,
+                std::map<Corner_index, Surface_patch_index_set>& incidence_map)
+{
+  for(auto& pair : incidence_map)
+  {
+    Surface_patch_index_set& patch_index_set = pair.second;
     Surface_patch_index_set new_index_set;
     for(Surface_patch_index idx : patch_index_set)
     {
@@ -1244,7 +1285,7 @@ Mesh_domain_with_polyline_features_3<MD_>::
 reindex_patches(const std::vector<Surf_p_index>& map)
 {
   reindex_patches(map, edges_incidences_);
-  reindex_patches(map, corners_incidences_);
+  reindex_patches(map, corners_incidences_); // now calls the map overload
 }
 
 template <class MD_>
@@ -1267,9 +1308,11 @@ Mesh_domain_with_polyline_features_3<MD_>::
 get_corner_incidences(Corner_index id,
                       IndicesOutputIterator indices_out) const
 {
-  if(id <= 0 || std::size_t(id) > corners_incidences_.size())
+  // FIXED: Use map find
+  typename Corners_incidences::const_iterator it = corners_incidences_.find(id);
+  if(it == corners_incidences_.end())
     return indices_out;
-  const Surface_patch_index_set& incidences = corners_incidences_[id - 1];
+  const Surface_patch_index_set& incidences = it->second;
   return std::copy(incidences.begin(), incidences.end(), indices_out);
 }
 
@@ -1371,7 +1414,7 @@ display_corner_incidences(std::ostream& os, Point_3 p, Corner_index id)
   typedef Mesh_3::internal::Display_incidences_to_curves_aux<Mdwpf,i_s_csi::value> D_i_t_c;
   typedef Mesh_3::internal::Display_incidences_to_patches_aux<Mdwpf,i_s_spi::value> D_i_t_p;
   D_i_t_c()(os, p, id, corners_tmp_incidences_[id - 1]);
-  D_i_t_p()(os, p, id, corners_incidences_[id - 1]);
+  D_i_t_p()(os, p, id, corners_incidences_[id]); // FIXED: use map subscript
 }
 /// @endcond
 template <class MD_>
@@ -1405,7 +1448,8 @@ compute_corners_incidences()
       }
     }
 
-    Surface_patch_index_set& incidences = corners_incidences_[id - 1];
+    // FIXED: Use map subscript with id
+    Surface_patch_index_set& incidences = corners_incidences_[id];
 
     for(Curve_index curve_index : corner_tmp_incidences)
     {
